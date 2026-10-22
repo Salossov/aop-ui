@@ -1,0 +1,96 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    paths: &build_paths
+      - 'src/**'
+      - '**/*.gradle'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.ps1'
+      - '.github/workflows/**'
+      - '.github/scripts/**'
+      - '!**/*.md'
+      - '!**/*.rst'
+      - '!**/*.adoc'
+  pull_request:
+    paths: *build_paths
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish an ordinary release (not a prerelease or nightly)
+        type: boolean
+        required: false
+        default: false
+      version:
+        description: 'Optional version, e.g. 1.0.0; blank uses mod_version from gradle.properties'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.release && 'release' || 'build' }}
+      RELEASE_VERSION: ${{ inputs.version || '' }}
+      RELEASE_NAME: 'AOP: UI'
+      RELEASE_REQUIREMENTS: 'Java 21 and NeoForge 21.1.252 or newer within 21.1 are required. Install the gameplay JAR; sources are for development.'
+      RELEASE_ARTIFACTS: |
+        build/libs/aopui-*.jar
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release rules
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Select build version
+        id: version
+        run: python3 .github/scripts/release.py prepare
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-disabled: ${{ env.ACT == 'true' }}
+      - name: Build and check
+        run: sh ./gradlew --no-daemon --console=plain --no-problems-report "-Pmod_version=$BUILD_VERSION" clean build
+      - name: Collect release files
+        run: python3 .github/scripts/release.py collect
+      - name: Verify publication plan locally
+        if: ${{ env.ACT && env.RELEASE_MODE != 'build' }}
+        run: python3 .github/scripts/release.py publish --dry-run
+      - name: Save build artifacts
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: aopui-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+      - name: Publish to GitHub Releases
+        if: ${{ env.RELEASE_MODE != 'build' && !env.ACT }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/release.py publish

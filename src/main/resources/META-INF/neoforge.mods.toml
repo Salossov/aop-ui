@@ -1,0 +1,22 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="All Rights Reserved"
+[[mods]]
+modId="aop_ui"
+version="${mod_version}"
+displayName="AOP: UI"
+logoFile="logo.png"
+authors="Salossov"
+description='''Shared themed configuration screens and administrator settings editing for AOP mods.'''
+[[dependencies.aop_ui]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.252,21.2)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.aop_ui]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+ordering="NONE"
+side="BOTH"

@@ -1,0 +1,83 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.148'
+}
+def workspaceRoot = file(providers.gradleProperty('aopWorkspace').getOrElse('.'))
+layout.buildDirectory = new File(workspaceRoot, 'build')
+
+group = 'aop.ui'
+version = project.mod_version
+base { archivesName = 'aopui-1.21.1' }
+java { toolchain.languageVersion = JavaLanguageVersion.of(21); withSourcesJar() }
+repositories { mavenCentral() }
+sourceSets {
+    verification {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations.verificationImplementation.extendsFrom configurations.implementation
+dependencies {
+    if (providers.gradleProperty('verificationMods').isPresent()) {
+        verificationRuntimeOnly fileTree(providers.gradleProperty('verificationMods').get()) { include '*.jar' }
+    }
+}
+neoForge {
+    version = project.neo_version
+    addModdingDependenciesTo sourceSets.test
+    addModdingDependenciesTo sourceSets.verification
+    mods { aop_ui { sourceSet sourceSets.main }; aop_ui_verification { sourceSet sourceSets.verification } }
+    runs {
+        client { client(); gameDirectory = new File(workspaceRoot, 'runs/client') }
+        server { server(); gameDirectory = new File(workspaceRoot, 'runs/server'); programArgument '--nogui' }
+        verifyClient {
+            client(); sourceSet = sourceSets.verification; gameDirectory = new File(workspaceRoot, 'runs/verification-client')
+            programArgument '--width'; programArgument '1280'; programArgument '--height'; programArgument '720'
+            systemProperty 'aopui.verify', 'true'
+            systemProperty 'aopui.report', layout.buildDirectory.file('reports/client.json').get().asFile.absolutePath
+            systemProperty 'fml.earlyprogresswindow', 'false'
+            systemProperty 'aopui.fixture', providers.gradleProperty('verificationFixture').getOrElse('true')
+        }
+        verifyServer {
+            server(); sourceSet = sourceSets.verification
+            gameDirectory = file(providers.gradleProperty('verificationServerDirectory').getOrElse(new File(workspaceRoot, 'runs/server').path))
+            programArgument '--nogui'; programArgument '--port'; programArgument '25676'
+            programArgument '--world'; programArgument 'aopui-settings-qa'
+            systemProperty 'aopui.verify.server', providers.gradleProperty('verificationServerPhase').getOrElse('network')
+            systemProperty 'aopui.remoteReport', layout.buildDirectory.dir('reports/multiplayer').get().asFile.absolutePath
+        }
+        verifyRemoteClient {
+            client(); sourceSet = sourceSets.verification
+            def role = providers.gradleProperty('verificationRole').getOrElse('admin')
+            gameDirectory = new File(workspaceRoot, 'runs/remote-' + role)
+            programArgument '--username'; programArgument role == 'admin' ? 'AopUiAdmin' : 'AopUiViewer'
+            programArgument '--quickPlayMultiplayer'; programArgument '127.0.0.1:25676'
+            systemProperty 'aopui.verify.remote', role
+            systemProperty 'aopui.remoteReport', layout.buildDirectory.dir('reports/multiplayer').get().asFile.absolutePath
+            systemProperty 'fml.earlyprogresswindow', 'false'
+        }
+        verifySingleplayer {
+            client(); sourceSet = sourceSets.verification; gameDirectory = new File(workspaceRoot, 'runs/singleplayer')
+            programArgument '--username'; programArgument 'AopUiOwner'
+            programArgument '--quickPlaySingleplayer'; programArgument 'aopui-settings-qa'
+            systemProperty 'aopui.verify.singleplayer', 'true'
+            systemProperty 'aopui.singleplayerReport', layout.buildDirectory.file('reports/singleplayer.json').get().asFile.absolutePath
+            systemProperty 'fml.earlyprogresswindow', 'false'
+        }
+    }
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+tasks.withType(AbstractArchiveTask).configureEach { preserveFileTimestamps = false; reproducibleFileOrder = true }
+def artifactVersion = project.version.toString()
+tasks.named('processResources') {
+    inputs.property('mod_version', artifactVersion)
+    filesMatching('META-INF/neoforge.mods.toml') { expand(mod_version: artifactVersion) }
+}
+tasks.named('test') { enabled = false }
+tasks.register('configRulesTest', JavaExec) {
+    workingDir workspaceRoot
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'aop.ui.ConfigRulesTest'
+}
+tasks.named('check') { dependsOn 'configRulesTest', 'verificationClasses' }
