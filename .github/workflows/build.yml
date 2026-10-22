@@ -99,7 +99,7 @@ jobs:
       - name: Find matching published UI
         if: ${{ !env.ACT }}
         env:
-          GH_TOKEN: ${{ secrets.DEPENDENCY_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/suite.py fetch ui
       - name: '1 - Build or reuse UI'
         id: build_ui
