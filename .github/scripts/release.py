@@ -136,13 +136,13 @@ def commit_notes(repository, target):
     return '\n'.join(lines) + '\n'
 
 
-def publish(dry_run=False):
+def publish(dry_run=False, assets_directory='dist'):
     plan = release_plan()
     if dry_run:
         print(json.dumps(plan, indent=2))
         return
     repository = os.environ['GH_REPO']
-    assets = sorted(Path('dist').iterdir())
+    assets = sorted(Path(assets_directory).iterdir())
     if not assets or not any(path.suffix == '.jar' for path in assets):
         raise ValueError('No packaged JARs to publish.')
 

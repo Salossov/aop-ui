@@ -30,6 +30,11 @@ on:
         required: false
         default: ''
 
+      force_rebuild:
+        description: Rebuild JARs instead of reusing verified artifacts
+        type: boolean
+        default: false
+
 permissions:
   contents: read
 
@@ -42,55 +47,88 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     env:
+      SUITE_TARGET: ui
       RELEASE_REQUESTED: ${{ inputs.release || false }}
-      RELEASE_VERSION: ${{ inputs.version || '' }}
-      RELEASE_NAME: 'AOP: UI'
-      RELEASE_REQUIREMENTS: 'Java 21 and NeoForge 21.1.252 or newer within 21.1 are required. Install the gameplay JAR; sources are for development.'
-      RELEASE_ARTIFACTS: |
-        build/libs/aopui-*.jar
+      SUITE_FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+      SUITE_UI_VERSION: ${{ inputs.version || '' }}
+      SUITE_UI_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check release rules
+      - name: Check build and publication rules
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
-      - name: Select build version
-        id: version
-        run: python3 .github/scripts/release.py prepare
       - name: Set up Java 21
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
-      - name: Set up Gradle and validate wrapper
+      - name: Set up Gradle dependency and task cache
         uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
           cache-disabled: ${{ env.ACT == 'true' }}
-      - name: Build and check
-        run: sh ./gradlew --no-daemon --console=plain --no-problems-report "-Pmod_version=$BUILD_VERSION" clean build
-      - name: Collect release files
-        run: python3 .github/scripts/release.py collect
-      - name: Verify publication plan locally
-        if: ${{ env.ACT && env.RELEASE_MODE != 'build' }}
-        run: python3 .github/scripts/release.py publish --dry-run
-      - name: Save build artifacts
+      - name: Lock source revisions and toolchain
+        id: lock
+        run: python3 .github/scripts/suite.py prepare
+
+      - name: Plan UI artifact identity
+        id: plan_ui
+        run: python3 .github/scripts/suite.py plan ui
+      - name: Restore verified release UI
+        id: cache_ui_release
+        if: ${{ !env.ACT && !inputs.force_rebuild }}
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/mod-suite/ui/release
+          key: ${{ steps.plan_ui.outputs.release-key }}
+      - name: Restore verified nightly UI
+        id: cache_ui_nightly
+        if: ${{ !env.ACT && !inputs.force_rebuild && !inputs.release && steps.cache_ui_release.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/mod-suite/ui/nightly
+          key: ${{ steps.plan_ui.outputs.nightly-key }}
+      - name: Find matching published UI
+        if: ${{ !env.ACT }}
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDENCY_TOKEN || github.token }}
+        run: python3 .github/scripts/suite.py fetch ui
+      - name: '1 - Build or reuse UI'
+        id: build_ui
+        env:
+          SUITE_RELEASE_CACHE_HIT: ${{ steps.cache_ui_release.outputs.cache-hit }}
+          SUITE_NIGHTLY_CACHE_HIT: ${{ steps.cache_ui_nightly.outputs.cache-hit }}
+        run: python3 .github/scripts/suite.py build ui
+      - name: Save verified UI
+        if: ${{ !env.ACT && steps.build_ui.outputs.store == 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.build_ui.outputs.path }}
+          key: ${{ steps.build_ui.outputs.key }}
+
+      - name: Collect component artifacts and provenance
+        run: python3 .github/scripts/suite.py collect ui
+      - name: Save component artifacts
         if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v7
         with:
-          name: aopui-${{ steps.version.outputs.version }}
-          path: dist/*
+          name: aop-ui-${{ steps.build_ui.outputs.version }}
+          path: dist/suite/*
           if-no-files-found: error
-      - name: Publish to GitHub Releases
-        if: ${{ env.RELEASE_MODE != 'build' && !env.ACT }}
+          retention-days: 14
+      - name: Verify publication plan locally
+        if: ${{ env.ACT && github.event_name != 'pull_request' }}
+        run: python3 .github/scripts/suite.py publish ui --dry-run
+      - name: Publish component to GitHub Releases
+        if: ${{ !env.ACT && github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: python3 .github/scripts/release.py publish
+        run: python3 .github/scripts/suite.py publish ui
