@@ -34,13 +34,26 @@ def select_version(mode, override, configured, run_number):
     return version
 
 
+def select_mode(event, requested_release):
+    if event == 'pull_request':
+        return 'build'
+    if event == 'workflow_dispatch':
+        return 'release' if requested_release else 'nightly'
+    if event == 'push':
+        return 'nightly'
+    raise ValueError('Unsupported release event: ' + event)
+
+
 def prepare():
-    version = select_version(os.environ['RELEASE_MODE'], os.environ.get('RELEASE_VERSION', ''),
+    mode = select_mode(os.environ['GITHUB_EVENT_NAME'], os.environ.get('RELEASE_REQUESTED', 'false').lower() == 'true')
+    version = select_version(mode, os.environ.get('RELEASE_VERSION', ''),
                              properties()['mod_version'], os.environ.get('GITHUB_RUN_NUMBER', ''))
-    for file, key in [('GITHUB_ENV', 'BUILD_VERSION'), ('GITHUB_OUTPUT', 'version')]:
+    for file, entries in [('GITHUB_ENV', [('RELEASE_MODE', mode), ('BUILD_VERSION', version)]),
+                          ('GITHUB_OUTPUT', [('mode', mode), ('version', version)])]:
         with open(os.environ[file], 'a', encoding='utf-8') as output:
-            output.write(key + '=' + version + '\n')
-    print('Build version: ' + version)
+            for key, value in entries:
+                output.write(key + '=' + value + '\n')
+    print('Publication mode: ' + mode + '; build version: ' + version)
 
 
 def collect():

@@ -11,6 +11,33 @@ import release
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_event_modes(self):
+        for event, requested, expected in [('push', False, 'nightly'), ('push', True, 'nightly'),
+                                           ('workflow_dispatch', False, 'nightly'), ('workflow_dispatch', True, 'release'),
+                                           ('pull_request', False, 'build'), ('pull_request', True, 'build')]:
+            with self.subTest(event=event, requested=requested):
+                self.assertEqual(release.select_mode(event, requested), expected)
+        with self.assertRaises(ValueError):
+            release.select_mode('pull_request_target', True)
+
+    def test_prepare_exports_actual_mode_and_version(self):
+        for event, requested, mode, version in [('push', 'false', 'nightly', '0.7.0-nightly.42'),
+                ('workflow_dispatch', 'false', 'nightly', '0.7.0-nightly.42'),
+                ('workflow_dispatch', 'true', 'release', '0.7.0'), ('pull_request', 'true', 'build', '0.7.0')]:
+            with self.subTest(event=event, requested=requested), tempfile.TemporaryDirectory() as directory:
+                previous = Path.cwd()
+                try:
+                    os.chdir(directory)
+                    Path('gradle.properties').write_text('mod_version=0.7.0\n')
+                    env = dict(GITHUB_EVENT_NAME=event, RELEASE_REQUESTED=requested, RELEASE_VERSION='', GITHUB_RUN_NUMBER='42',
+                               GITHUB_ENV=str(Path(directory, 'env')), GITHUB_OUTPUT=str(Path(directory, 'output')))
+                    with patch.dict(os.environ, env):
+                        release.prepare()
+                    self.assertEqual(Path('env').read_text(), 'RELEASE_MODE=' + mode + '\nBUILD_VERSION=' + version + '\n')
+                    self.assertEqual(Path('output').read_text(), 'mode=' + mode + '\nversion=' + version + '\n')
+                finally:
+                    os.chdir(previous)
+
     def test_blank_version_uses_project(self):
         self.assertEqual(release.select_version('release', '  ', '0.7.0', ''), '0.7.0')
 
@@ -39,6 +66,32 @@ class ReleaseTests(unittest.TestCase):
         with patch.dict(os.environ, RELEASE_MODE='nightly', BUILD_VERSION='1.0.0-nightly.42', GITHUB_SHA='abc'):
             self.assertTrue(release.release_plan()['prerelease'])
             self.assertFalse(release.release_plan()['latest'])
+
+    def test_nightly_replaces_only_nightly_without_commit_list(self):
+        from subprocess import CompletedProcess
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                Path('dist').mkdir()
+                Path('dist/mod-1.0.0-nightly.42.jar').write_bytes(b'test')
+                Path('gradle.properties').write_text('minecraft_version=1.21.1\n')
+                env = dict(RELEASE_MODE='nightly', BUILD_VERSION='1.0.0-nightly.42', RELEASE_NAME='Test',
+                           RELEASE_REQUIREMENTS='Java 21.', GITHUB_SHA='abc', GH_REPO='owner/repo', RUNNER_TEMP=directory)
+                responses = [CompletedProcess([], 0, stdout='{"id":123}'), CompletedProcess([], 0, stdout='{"ref":"refs/tags/nightly"}'),
+                             CompletedProcess([], 0, stdout=''), CompletedProcess([], 0, stdout=''), CompletedProcess([], 0)]
+                with patch.dict(os.environ, env), patch('release.subprocess.run', side_effect=responses) as run, patch('release.commit_notes') as notes:
+                    release.publish()
+                    deleted = [call.args[0][-1] for call in run.call_args_list if 'DELETE' in call.args[0]]
+                    self.assertEqual(deleted, ['repos/owner/repo/releases/123', 'repos/owner/repo/git/refs/tags/nightly'])
+                    command = run.call_args.args[0]
+                    self.assertEqual(command[:4], ['gh', 'release', 'create', 'nightly'])
+                    self.assertIn('--prerelease=true', command)
+                    self.assertIn('--latest=false', command)
+                    notes.assert_not_called()
+                    self.assertNotIn('## Commits', Path(directory, 'aop-release-notes.md').read_text())
+            finally:
+                os.chdir(previous)
 
     def test_publish_flags_and_existing_version(self):
         with tempfile.TemporaryDirectory() as directory:
